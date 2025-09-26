@@ -1,33 +1,79 @@
-# Spectral Alerts
+# ⚡ Spectral Alerts
 
-Spectral alerts describe a MS2 pattern that can be linked to substructures of hazardous compounds and can be seen as the pendant of structural alerts for MS2 spectra.
+Spectral Alerts describe MS² fragmentation patterns that can be linked to toxicologically relevant substructures. Think of them as the MS² counterpart of structural alerts 🧩 — but for spectra!
 
-The spectral alerts presented were mined with MS2LDA 2.0 and the publication can be found here.
+The Spectral Alerts presented here were mined using MS2LDA 2.0 and are intended to be used for nontarget screening workflows for pesticides and contaminantes.
+📄 Read the full publication here
 
-## Why use them?
+-visual abstract (coming soon)- 
 
-- querying for spectral alerts is quick!
+---
 
-- allows to narrow down the sample size by 98%!
+## ✨ Why use Spectral Alerts?
 
-- easy to interpret and further analyze flagged features!
+⚡ Fast querying – instantly match alerts in your data
 
-- caveat: Check if your substructures of interest are part of the spectral alerts! We focused on pesticides. The workflow provided can also be applied on different compound classes.
+🎯 Efficient filtering – reduce your candidate space by up to 98%
 
-## How to use them?
+🔍 Transparent interpretation – alerts are easy to explain and explore
 
-- git clone ...
+⚠️ Important caveat: make sure your substructures of interest are covered.
+Our initial focus was pesticides, but the workflow can be extended to other compound classes.
 
-- cd spectral alerts
+---
 
-- pip install requirements.txt
+## 🚀 Quickstart
 
-- if you are into computational mass spectrometry: the Mass2Motifs are available in .. format
+Clone the repository and launch the app with Streamlit:
 
-## What they cover?
+```bash
+git clone https://github.com/j-a-dietrich/Spectral-Alerts.git
+cd Spectral-Alerts
+pip install -r requirements.txt
+streamlit run spectral_alerts.py
+```
 
-## Some analysis results
+Your browser will open automatically 🌐
 
-## How to mine new spectral alerts?
+---
 
-workflow!
+## 🗂️ What do they cover?
+
+-all spectral alerts (coming soon)-
+
+---
+
+## 📈 Analysis Results
+
+-NTS results (coming soon)-
+
+---
+
+## 🔬 How to Mine & Contribute New Alerts
+
+We welcome contributions!
+Follow this workflow to generate and submit new Spectral Alerts:
+
+📦 Prepare your MS² dataset
+
+🧮 Run MS2LDA 2.0 for motif extraction
+
+🧩 Curate & validate meaningful alerts
+
+📤 Submit your alerts via Pull Request
+
+-workflow figure here (coming soon)-
+
+---
+
+📬 Get in Touch
+
+💡 Questions, ideas, or contributions? Open an issue or reach out via GitHub Discussions
+
+---
+
+## 📚 Citation
+
+If you use Spectral Alerts in your research, please cite our work:
+
+coming soon
