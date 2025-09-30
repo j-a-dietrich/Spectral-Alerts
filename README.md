@@ -5,7 +5,7 @@ Spectral Alerts describe MS² fragmentation patterns that can be linked to toxic
 The Spectral Alerts presented here were mined using MS2LDA 2.0 and are intended to be used for nontarget screening workflows for pesticides and contaminantes.
 📄 Read the full publication here
 
--visual abstract (coming soon)- 
+![](figures/VisualAbstract.jpg) 
 
 ---
 
@@ -15,7 +15,7 @@ The Spectral Alerts presented here were mined using MS2LDA 2.0 and are intended 
 
 🎯 Efficient filtering – reduce your candidate space by up to 98%
 
-🔍 Transparent interpretation – alerts are easy to explain and explore
+🔍 Easy interpretation – alerts are easy to explain and explore
 
 ⚠️ Important caveat: make sure your substructures of interest are covered.
 Our initial focus was pesticides, but the workflow can be extended to other compound classes.
@@ -35,17 +35,19 @@ streamlit run spectral_alerts.py
 
 Your browser will open automatically 🌐
 
+![](figures/SpectralAlertViewerHints.jpg)
+
 ---
 
 ## 🗂️ What do they cover?
 
--all spectral alerts (coming soon)-
+![](figures/AllAlerts.jpg)
 
 ---
 
 ## 📈 Analysis Results
 
--NTS results (coming soon)-
+![](figures/CaseStudyTomato200ppb.jpg)
 
 ---
 
