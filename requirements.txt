@@ -1,0 +1,9 @@
+matchms==0.27
+MS2LDA==2.0.1
+numba
+numpy==1.26.4
+pandas==2.2.2
+rdkit==2025.3.6
+rdkit_pypi==2022.9.5
+streamlit==1.47.0
+tqdm==4.67.1
