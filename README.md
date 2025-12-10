@@ -49,7 +49,7 @@ Below you can find all 50 Spectral Alerts mined with MS2LDA 2.0. Three Spectral 
 ## 📈 Analysis Results
 The result below show the use of spectral alerts in a nontarget screening procedure on a pesticide spiked tomato sample. This is not the output of the Spectral Alert Viewer! To generate the results below, go to *spectral_alerts_analysis* → *nontarget screening* → *tomato200ppb_NTS.ipynb*.
 
-![](figures/CaseStudyTomato200ppb.jpg)
+![](figures/CaseStudyTomato10ppb.jpg)
 
 ---
 

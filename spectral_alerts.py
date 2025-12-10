@@ -116,7 +116,10 @@ def subset_match(q, r, frag_tolerance=0.005, loss_tolerance=0.01):
 def extract_retention_time(r):
     rt = r.get("retention_time")
     if not rt:
-        rt = r.get('scan_start_time')[0]
+        try:
+            rt = r.get('scan_start_time')[0]
+        except TypeError:
+            rt = "N/A"
     else:
         rt = rt / 60.0 
     return rt
@@ -142,7 +145,7 @@ if uploaded_alerts and uploaded_spectra:
             matched = subset_match(q, r)
             if matched:
                 any_match = True
-                query_smiles = q.get("short_annotation")
+                query_smiles = q.get("short_annotation") if  q.get("short_annotation") else q.get("auto_annotation")[0]
                 mol = Chem.MolFromSmiles(query_smiles) 
                 mol_img = mol_to_base64(mol)
 
