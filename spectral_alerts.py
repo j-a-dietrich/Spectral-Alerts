@@ -1,32 +1,51 @@
-import streamlit as st
+import base64
+import os
+import tempfile
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+from io import BytesIO
+
+import numpy as np
 import pandas as pd
-from matchms.importing import load_from_mgf, load_from_json, load_from_mzml
-from matchms.similarity import CosineGreedy
-from io import StringIO
+import streamlit as st
+from matplotlib.figure import Figure
+from matchms.exporting import save_as_json
+from matchms.importing import load_from_json, load_from_mgf, load_from_mzml
+from MS2LDA.Add_On.MassQL.MassQL4MotifDB import load_motifDB, motifDB2motifs
 from rdkit import Chem
 from rdkit.Chem import Draw
-from io import BytesIO
-import base64
-import numpy as np
-from numba import njit
-from tqdm import tqdm
 
+from matching_utils import find_matches  # must sit next to this file
 
-from matchms.filtering import default_filters
-from matchms.exporting import save_as_json
-from MS2LDA.Add_On.MassQL.MassQL4MotifDB import load_motifDB, motifDB2motifs
+FRAG_TOL = 0.0   # m/z tolerance for fragments (after rounding to 2 decimals)
+LOSS_TOL = 0.0   # m/z tolerance for neutral losses
 
 st.set_page_config(page_title="Spectral Alerts", layout="wide")
 st.title("🧪 Spectral Alerts Viewer")
 
-# --- Upload
+# ----------------------------------------------------------------------------
+# Sidebar: uploads and settings
+# ----------------------------------------------------------------------------
 st.sidebar.header("Upload Files")
 uploaded_alerts = st.sidebar.file_uploader("Upload Spectral Alerts", type=["json"])
-uploaded_spectra = st.sidebar.file_uploader("Upload Sample Spectra", type=["mgf", "mzml", "json"], accept_multiple_files=True)
+uploaded_spectra = st.sidebar.file_uploader(
+    "Upload Sample Spectra", type=["mgf", "mzml", "json"], accept_multiple_files=True
+)
 
-import tempfile
-import os
+st.sidebar.header("Settings")
+max_cpu = os.cpu_count() or 1
+n_workers = st.sidebar.number_input(
+    f"CPU cores for screening (1-{max_cpu})", min_value=1, max_value=max_cpu, value=max_cpu
+)
+make_plots = st.sidebar.checkbox(
+    "Draw spectrum plots (slower with many matches)", value=True
+)
 
+
+# ----------------------------------------------------------------------------
+# Loading
+# ----------------------------------------------------------------------------
 @st.cache_data(show_spinner="Processing alerts...")
 def process_alerts(file):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
@@ -40,196 +59,266 @@ def process_alerts(file):
     if "matching_score" in motifDB.columns:
         motifDB_grouped = motifDB.groupby("scan").max()
         for i, spectral_alert in enumerate(spectral_alerts):
-            spectral_alert.set("matching_score", motifDB_grouped.matching_score[i])
+            spectral_alert.set("matching_score", motifDB_grouped["matching_score"].iloc[i])
             spectral_alerts_extended.append(spectral_alert)
-
         return spectral_alerts_extended
-    
+
     return spectral_alerts
+
 
 def process_spectra(files):
     spectra = []
     for f in (files if isinstance(files, list) else [files]):
         ext = f.name.lower().split(".")[-1]
-        
 
         if ext == "json":
-            file_like = BytesIO(f.read())
-            specs = load_from_json(file_like)
+            specs = load_from_json(BytesIO(f.read()))
         elif ext == "mgf":
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mgf") as tmp:
                 tmp.write(f.read())
                 tmp.flush()
                 path = tmp.name
             specs = load_from_mgf(path)
         elif ext == "mzml":
-            file_like = BytesIO(f.read())
-            specs = load_from_mzml(file_like)
+            specs = load_from_mzml(BytesIO(f.read()))
         else:
-            specs = []
             continue
 
-        for s in specs:
-            try:
-                #spectra.append(default_filters(s))
-                spectra.append(s)
-            except Exception as e:
-                print(f"Error filtering spectrum: {e}")
-
+        spectra.extend(specs)
     return spectra
 
 
-@st.cache_data
-def mol_to_base64(mol, size=(150, 150)):
-    img = Draw.MolToImage(mol, size=size)
+# ----------------------------------------------------------------------------
+# Helpers for images
+# ----------------------------------------------------------------------------
+def png_to_data_uri(png_bytes):
+    """st.dataframe can show images given as 'data:image/png;base64,...' strings."""
+    return "data:image/png;base64," + base64.b64encode(png_bytes).decode("utf-8")
+
+
+def mol_to_data_uri(smiles, size=(150, 150)):
+    mol = Chem.MolFromSmiles(smiles) if smiles else None
+    if mol is None:
+        return None
     buffered = BytesIO()
-    img.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    return f'<img src="data:image/png;base64,{img_str}" />'
+    Draw.MolToImage(mol, size=size).save(buffered, format="PNG")
+    return png_to_data_uri(buffered.getvalue())
 
 
-@njit
-def is_all_within_tolerance_numba(query_vals, target_vals, tolerance):
-    for q in query_vals:
-        found = False
-        for t in target_vals:
-            if abs(q - t) <= tolerance:
-                found = True
-                break
-        if not found:
-            return False
-    return True
+def rounded_mz(peaks_or_losses):
+    """Rounded m/z array of a matchms Fragments object (empty array if there is none)."""
+    if peaks_or_losses is None:
+        return np.array([], dtype=np.float64)
+    return np.round(np.asarray(peaks_or_losses.mz, dtype=np.float64), 2)
 
-def subset_match(q, r, frag_tolerance=0.005, loss_tolerance=0.01):
-    frag_match = is_all_within_tolerance_numba(
-        np.array(q.peaks.mz, dtype=np.float64),
-        np.array(r.peaks.mz, dtype=np.float64),
-        frag_tolerance
-    )
-    loss_match = is_all_within_tolerance_numba(
-        np.array(q.losses.mz, dtype=np.float64),
-        np.array(r.losses.mz, dtype=np.float64),
-        loss_tolerance
-    )
-    return frag_match and loss_match 
+
+def spectrum_match_uri(sample, alert, tol=FRAG_TOL):
+    """
+    Mirror plot: sample spectrum on top (red = fragment also in the alert, grey = other),
+    alert spectrum at the bottom (blue).
+    """
+    s_mz, s_int = sample.peaks.mz, sample.peaks.intensities
+    a_mz, a_int = alert.peaks.mz, alert.peaks.intensities
+
+    if len(a_mz):
+        diffs = np.abs(np.round(s_mz, 2)[:, None] - np.round(a_mz, 2)[None, :])
+        matched = (diffs <= tol).any(axis=1)
+    else:
+        matched = np.zeros(len(s_mz), dtype=bool)
+
+    s_norm = s_int / max(s_int.max(), 1e-12) if len(s_int) else s_int
+    a_norm = a_int / max(a_int.max(), 1e-12) if len(a_int) else a_int
+
+    # Figure (not pyplot) so no global state / memory leaks
+    fig = Figure(figsize=(3.4, 1.7), dpi=80)
+    ax = fig.subplots()
+    ax.vlines(s_mz[~matched], 0, s_norm[~matched], color="black", linewidth=1)
+    ax.vlines(s_mz[matched], 0, s_norm[matched], color="red", linewidth=1.5)
+    #ax.vlines(a_mz, 0, -a_norm, color="steelblue", linewidth=1.5) # makes a mirror plot
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.set_yticks([])
+    ax.tick_params(axis="x", labelsize=7)
+    ax.set_xlabel("m/z", fontsize=7, labelpad=1)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    fig.tight_layout(pad=0.3)
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png")
+    return png_to_data_uri(buf.getvalue())
+
 
 def extract_retention_time(r):
+    """Retention time in minutes; NaN if unknown (keeps the column numeric and sortable)."""
     rt = r.get("retention_time")
     if not rt:
         try:
-            rt = r.get('scan_start_time')[0]
+            rt = r.get("scan_start_time")[0]
         except TypeError:
-            rt = "N/A"
+            rt = np.nan
     else:
-        rt = rt / 60.0 
+        rt = rt / 60.0
     return rt
 
-# --- Run matching
-if uploaded_alerts and uploaded_spectra:
-    st.success("Files uploaded. Computing matches...")
-    query_spectra = process_alerts(uploaded_alerts)
-    print("spectra alerts done")
-    ref_spectra = process_spectra(uploaded_spectra)
-    print("input spectra done")
 
-    results = []
-    pints24_specs = []
+# ----------------------------------------------------------------------------
+# Screening
+# ----------------------------------------------------------------------------
+def run_matching(query_spectra, ref_spectra, n_workers):
+    """Returns a list of (sample_index, alert_index) pairs, using several cores if requested."""
+    # Reduce everything to small numpy arrays first: cheap to send to worker processes
+    alerts = [(rounded_mz(q.peaks), rounded_mz(q.losses)) for q in query_spectra]
+    jobs = [(i, rounded_mz(r.peaks), rounded_mz(r.losses)) for i, r in enumerate(ref_spectra)]
 
-    for i, r in tqdm(enumerate(ref_spectra)):
-        any_match = False
-        for q in query_spectra:
-            spectral_alert_id = q.get("motif_id")
-            matching_score = q.get("matching_score")
-            name = q.get("scientific_name")
+    worker = partial(find_matches, alerts=alerts, frag_tol=FRAG_TOL, loss_tol=LOSS_TOL)
 
-            matched = subset_match(q, r)
-            if matched:
-                any_match = True
-                query_smiles = q.get("short_annotation") if  q.get("short_annotation") else q.get("auto_annotation")[0]
-                mol = Chem.MolFromSmiles(query_smiles) 
-                mol_img = mol_to_base64(mol)
+    if n_workers > 1 and len(jobs) >= 200:  # multiprocessing only pays off for larger inputs
+        # Several chunks per worker so that the work is balanced
+        chunk_size = max(1, -(-len(jobs) // (n_workers * 4)))  # ceiling division
+        chunks = [jobs[k:k + chunk_size] for k in range(0, len(jobs), chunk_size)]
+        try:
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                results = list(pool.map(worker, chunks))  # order is preserved
+            return [hit for chunk_hits in results for hit in chunk_hits]
+        except Exception as e:  # e.g. multiprocessing not available in this environment
+            st.warning(f"Multi-core screening failed ({e}); falling back to a single core.")
+
+    return worker(jobs)
 
 
-                results.append({
-                    "Sample spec ID": i,
-                    "Sample Precursor": r.get("precursor_mz"),
-                    "Retention Time": extract_retention_time(r),
-                    "Certainty": matching_score,
-                    "Alert Name": name,
-                    "Alert Structure": mol_img 
-                })
-                
+def screen(query_spectra, ref_spectra, n_workers, make_plots):
+    hits = run_matching(query_spectra, ref_spectra, n_workers)
 
-                if "category_of_prioritization" not in r.metadata:
-    
-                    r.set("category_of_prioritization", "fragmentation-based")
-                    r.set("prioritized_feature", True)
-                    r.set("prioritization_certainty", matching_score)
-                    r.set("reason_prioritized", spectral_alert_id)
-                    
-                else:
-                    r.metadata["reason_prioritized"] += "," + spectral_alert_id
+    # Per-alert info, computed once (not once per match)
+    alert_info = []
+    for q in query_spectra:
+        smiles = q.get("short_annotation")
+        if not smiles:
+            try:
+                smiles = q.get("auto_annotation")[0]
+            except (TypeError, IndexError):
+                smiles = None
+        alert_info.append({
+            "id": q.get("motif_id"),
+            "score": q.get("matching_score"),
+            "name": q.get("scientific_name"),
+            "structure": mol_to_data_uri(smiles),
+        })
 
-        
-        if not any_match:
+    matches_by_spec = defaultdict(list)
+    for spec_idx, alert_idx in hits:
+        matches_by_spec[spec_idx].append(alert_idx)
+
+    rows, images = [], []
+    for i, r in enumerate(ref_spectra):
+        alert_idxs = matches_by_spec.get(i)
+
+        if not alert_idxs:
             r.set("category_of_prioritization", "fragmentation-based")
             r.set("prioritized_feature", False)
             r.set("prioritization_certainty", None)
             r.set("reason_prioritized", None)
+            continue
 
-        pints24_specs.append(r)
-    print("comparison done")
+        rt = extract_retention_time(r)
+        for a in alert_idxs:
+            info = alert_info[a]
+            rows.append({
+                "Sample spec ID": i,
+                "Sample Precursor": r.get("precursor_mz"),
+                "Retention Time": rt,
+                "Certainty": info["score"],
+                "Alert Name": info["name"],
+            })
+            images.append({
+                "Alert Structure": info["structure"],
+                "Spectrum Match": spectrum_match_uri(r, query_spectra[a]) if make_plots else None,
+            })
 
-    df = pd.DataFrame(results)
+            if "category_of_prioritization" not in r.metadata:
+                r.set("category_of_prioritization", "fragmentation-based")
+                r.set("prioritized_feature", True)
+                r.set("prioritization_certainty", info["score"])
+                r.set("reason_prioritized", info["id"])
+            else:
+                r.set("reason_prioritized", f"{r.get('reason_prioritized')},{info['id']}")
+
+    # Pure data (goes into the csv) and images (display only) are kept apart
+    table = pd.DataFrame(rows)
+    image_df = pd.DataFrame(images)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "prioritized.json")
+        save_as_json(ref_spectra, path)
+        with open(path) as fh:
+            json_data = fh.read()
+
+    return {"table": table, "images": image_df, "json": json_data}
+
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+if uploaded_alerts and uploaded_spectra:
+    # Streamlit re-runs this whole script on every widget interaction. The expensive part is
+    # therefore stored in session_state and only recomputed when the inputs change.
+    run_key = (
+        uploaded_alerts.name, uploaded_alerts.size,
+        tuple((f.name, f.size) for f in uploaded_spectra),
+        make_plots,
+    )
+    if st.session_state.get("run_key") != run_key:
+        with st.spinner(f"Loading and screening (using up to {n_workers} core(s))..."):
+            query_spectra = process_alerts(uploaded_alerts)
+            ref_spectra = process_spectra(uploaded_spectra)
+            st.session_state["results"] = screen(query_spectra, ref_spectra, n_workers, make_plots)
+            st.session_state["run_key"] = run_key
+
+    res = st.session_state["results"]
+    table, images = res["table"], res["images"]
+
     st.subheader("📊 Matches Found")
 
-    # --- Filter widgets
-    st.markdown("### 🔍 Filter Results")
+    if table.empty:
+        st.info("No matches found.")
+    else:
+        st.markdown("### 🔍 Filter Results")
+        search = st.text_input("Alert Name contains", "")  # instant now: nothing is recomputed
 
-    filtered_df = df.copy()
+        full = table.join(images)  # same index -> aligned row by row
+        if search:
+            full = full[full["Alert Name"].str.contains(search, case=False, na=False, regex=False)]
 
-    # --- Column 1: Text search (assumed to be a string column) ---
-    search_col1 = st.text_input("Alert Name", "")
-    if search_col1:
-        filtered_df = filtered_df[filtered_df["Alert Name"].str.contains(search_col1, case=False, na=False)]
+        # Click a column header to sort. The magnifier icon in the table toolbar searches all columns.
+        st.dataframe(
+            full,
+            hide_index=True,
+            use_container_width=True,
+            row_height=110,
+            column_config={
+                "Alert Structure": st.column_config.ImageColumn("Alert Structure"),
+                "Spectrum Match": st.column_config.ImageColumn(
+                    "Spectrum Match", help="Top: sample (red = fragments found in the alert). Bottom: alert (blue)."
+                ),
+                "Sample Precursor": st.column_config.NumberColumn(format="%.4f"),
+                "Retention Time": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
 
-    # --- Column 2: Numeric range filter ---
-    ##min_val_col2 = float(df["Sample Precursor"].min())
-    ##max_val_col2 = float(df["Sample Precursor"].max())
-    #range_col2 = st.slider("Range for 'Sample Precursor'", min_value=min_val_col2, max_value=max_val_col2, value=(min_val_col2, max_val_col2))
-    #filtered_df = filtered_df[(filtered_df["Sample Precursor"] >= range_col2[0]) & (filtered_df["Sample Precursor"] <= range_col2[1])]
+        # csv: only the data columns, no images (all matches, independent of the filter)
+        st.download_button(
+            "⬇️ Download csv table",
+            table.to_csv(index=False).encode("utf-8"),
+            "spectral_matches.csv",
+            "text/csv",
+        )
 
-    # --- Column 2: Numeric range filter ---
-    #min_val_col2 = float(df["Retention Time"].min())
-    #max_val_col2 = float(df["Retention Time"].max())
-    #range_col2 = st.slider("Range for 'Retention Time'", min_value=min_val_col2, max_value=max_val_col2, value=(min_val_col2, max_val_col2))
-    #filtered_df = filtered_df[(filtered_df["Retention Time"] >= range_col2[0]) & (filtered_df["Retention Time"] <= range_col2[1])]
-
-    # --- Column 2: Numeric range filter ---
-    #min_val_col2 = float(df["Certainty"].min())
-    #max_val_col2 = float(df["Certainty"].max())
-    #range_col2 = st.slider("Range for 'Certainty'", min_value=min_val_col2, max_value=max_val_col2, value=(min_val_col2, max_val_col2))
-    #filtered_df = filtered_df[(filtered_df["Certainty"] >= range_col2[0]) & (filtered_df["Certainty"] <= range_col2[1])]
-
-
-    # Show filtered results
-    st.write(filtered_df.to_html(escape=False), unsafe_allow_html=True)
-
-    # Export
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download csv table", csv, "spectral_matches.csv", "text/csv")
-
-    
-
-    # Call function before rendering the button
-    with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as tmpfile:
-        save_as_json(pints24_specs, tmpfile.name)
-        tmpfile.seek(0)
-        json_data = tmpfile.read()
-
-    st.download_button("🔽 Download JSON (PINTS24 format)", json_data, "prioritized_results_pints24.json", "application/json")
-
-
+    st.download_button(
+        "🔽 Download JSON (PINTS24 format)",
+        res["json"],
+        "prioritized_results_pints24.json",
+        "application/json",
+    )
 
 else:
     st.info("Please upload spectral alerts and sample data to begin with nontarget screening.")
