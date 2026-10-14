@@ -32,12 +32,13 @@ cd Spectral-Alerts
 pip install -r requirements.txt
 streamlit run spectral_alerts.py
 ```
+❗If you want to screen Thermo Fisher .raw files, please install [ThermoRawFileParser](github.com/compomics/ThermoRawFileParser) and ensure it can be run from the command line.
 
 Your browser will open automatically 🌐
 
 ![](figures/SpectralAlertViewer.jpg)
 
-❗ If you want to screen Thermo Fisher .raw files, please install [ThermoRawFileParser](github.com/compomics/ThermoRawFileParser) and ensure it can be run from the command line.
+
 ---
 
 ## 🗂️ What do they cover?
