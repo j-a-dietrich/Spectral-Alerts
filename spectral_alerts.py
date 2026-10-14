@@ -16,6 +16,10 @@ from MS2LDA.Add_On.MassQL.MassQL4MotifDB import load_motifDB, motifDB2motifs
 from rdkit import Chem
 from rdkit.Chem import Draw
 
+import glob
+import shutil
+import subprocess
+
 from matching_utils import find_matches  # must sit next to this file
 
 FRAG_TOL = 0.0   # m/z tolerance for fragments (after rounding to 2 decimals)
@@ -30,7 +34,7 @@ st.title("🧪 Spectral Alerts Viewer")
 st.sidebar.header("Upload Files")
 uploaded_alerts = st.sidebar.file_uploader("Upload Spectral Alerts", type=["json"])
 uploaded_spectra = st.sidebar.file_uploader(
-    "Upload Sample Spectra", type=["mgf", "mzml", "json"], accept_multiple_files=True
+    "Upload Sample Spectra", type=["mgf", "mzml", "json", "raw"], accept_multiple_files=True
 )
 
 st.sidebar.header("Settings")
@@ -46,6 +50,62 @@ make_plots = st.sidebar.checkbox(
 # ----------------------------------------------------------------------------
 # Loading
 # ----------------------------------------------------------------------------
+
+def convert_thermo_raw_to_mzml(uploaded_file):
+    """Convert an uploaded Thermo RAW file to mzML and load its spectra."""
+
+    parser = os.environ.get(
+        "THERMO_RAW_FILE_PARSER",
+        shutil.which("ThermoRawFileParser") or "",
+    )
+
+    if not parser:
+        raise RuntimeError(
+            "ThermoRawFileParser was not found. Install it and set "
+            "THERMO_RAW_FILE_PARSER to its executable path."
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        raw_path = os.path.join(tmpdir, "input.raw")
+
+        with open(raw_path, "wb") as raw_file:
+            raw_file.write(uploaded_file.getvalue())
+
+        command = [
+            parser,
+            f"-i={raw_path}",
+            f"-o={tmpdir}",
+            "-f=1",  # mzML output
+            "-m=2",  # no separate metadata file
+            "-l=3",  # warnings only
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                "ThermoRawFileParser conversion failed: "
+                + (result.stderr or result.stdout or "Unknown error")
+            )
+
+        mzml_files = glob.glob(os.path.join(tmpdir, "*.mzML"))
+
+        if not mzml_files:
+            raise RuntimeError(
+                "Conversion completed, but no mzML output file was found."
+            )
+
+        # Load the spectra before the temporary directory is removed.
+        spectra = load_from_mzml(mzml_files[0])
+
+        return list(spectra)
+
 @st.cache_data(show_spinner="Processing alerts...")
 def process_alerts(file):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
@@ -71,7 +131,9 @@ def process_spectra(files):
     for f in (files if isinstance(files, list) else [files]):
         ext = f.name.lower().split(".")[-1]
 
-        if ext == "json":
+        if ext == "raw":
+            specs = convert_thermo_raw_to_mzml(f)
+        elif ext == "json":
             specs = load_from_json(BytesIO(f.read()))
         elif ext == "mgf":
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mgf") as tmp:
